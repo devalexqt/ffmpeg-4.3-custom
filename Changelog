@@ -22,6 +22,7 @@ version <next>:
 - MODS demuxer
 - PhotoCD decoder
 - MCA demuxer
+- http video filter, send raw frames to remote url for postprocessing
 
 
 version 4.3:

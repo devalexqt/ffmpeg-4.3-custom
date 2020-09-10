@@ -325,6 +325,7 @@ External library support:
   --enable-vulkan          enable Vulkan code [no]
   --disable-xlib           disable xlib [autodetect]
   --disable-zlib           disable zlib [autodetect]
+  --enable-libcurl         enable http filter that send raw frames to remote server
 
   The following libraries provide various hardware acceleration features:
   --disable-amf            disable AMF video encoding code [autodetect]
@@ -1827,6 +1828,7 @@ EXTERNAL_LIBRARY_LIST="
     opengl
     pocketsphinx
     vapoursynth
+    libcurl
 "
 
 HWACCEL_AUTODETECT_LIBRARY_LIST="
@@ -3650,6 +3652,7 @@ vpp_qsv_filter_select="qsvvpp"
 xfade_opencl_filter_deps="opencl"
 yadif_cuda_filter_deps="ffnvcodec"
 yadif_cuda_filter_deps_any="cuda_nvcc cuda_llvm"
+http_filter_deps="libcurl"
 
 # examples
 avio_list_dir_deps="avformat avutil"
@@ -6367,6 +6370,7 @@ enabled libmysofa         && { check_pkg_config libmysofa libmysofa mysofa.h mys
 enabled libnpp            && { check_lib libnpp npp.h nppGetLibVersion -lnppig -lnppicc -lnppc -lnppidei ||
                                check_lib libnpp npp.h nppGetLibVersion -lnppi -lnppc -lnppidei ||
                                die "ERROR: libnpp not found"; }
+enabled libcurl           && require "libcurl >= 7.68.0" curl/curl.h curl_easy_init -lcurl
 enabled libopencore_amrnb && require libopencore_amrnb opencore-amrnb/interf_dec.h Decoder_Interface_init -lopencore-amrnb
 enabled libopencore_amrwb && require libopencore_amrwb opencore-amrwb/dec_if.h D_IF_init -lopencore-amrwb
 enabled libopencv         && { check_headers opencv2/core/core_c.h &&

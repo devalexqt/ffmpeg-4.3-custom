@@ -12078,6 +12078,34 @@ For example, to horizontally flip the input video with @command{ffmpeg}:
 ffmpeg -i in.avi -vf "hflip" out.avi
 @end example
 
+@anchor{http}
+@section http
+
+Send raw frame data to the remote server for postprocessing and await response as new frame in same format and size. To enable filter configure ffmpeg with @code{./configure --enable-libcurl}.
+
+The filter accepts the following options:
+
+@table @option
+@item url
+Specify remote server url location.
+
+@item content_type
+Specify content-type header in request header, default to "application/octet-stream".
+@end table
+
+Simple demo http server for postprocessing frames can be found here: @url{https://github.com/devalexqt/simple_ffmpeg_http_filter_server}
+
+@subsection Examples
+@itemize
+
+@item
+Send raw frames to "http://localhost:3000/frame?param=abc"
+
+@example
+ffmpeg -i input.mp4 -vf format=rgb24,http=url="http\\\://localhost\\\:3000/frame?param=abc":content_type=application/octet-stream -t 10 out.mp4
+@end example
+@end itemize
+
 @section histeq
 This filter applies a global color histogram equalization on a
 per-frame basis.

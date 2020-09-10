@@ -445,6 +445,7 @@ extern AVFilter ff_vf_yaepblur;
 extern AVFilter ff_vf_zmq;
 extern AVFilter ff_vf_zoompan;
 extern AVFilter ff_vf_zscale;
+extern AVFilter ff_vf_http;
 
 extern AVFilter ff_vsrc_allrgb;
 extern AVFilter ff_vsrc_allyuv;
