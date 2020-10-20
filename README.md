@@ -3,6 +3,9 @@ FFmpeg 4.3  README
 
 This is custom `ffmpeg` build with `http` filter.
 
+## INSTRACTION
+https://docs.google.com/document/d/1sLuL2P41Xe7kFLfahl-MhGrJDoEOkg6nbLnbcmzzGDQ/edit
+
 
 ## About ffmpeg
 FFmpeg is a collection of libraries and tools to process multimedia content
