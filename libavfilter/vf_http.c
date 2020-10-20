@@ -61,26 +61,6 @@ static av_cold int init(AVFilterContext *ctx)
 {
     HttpContext *http = ctx->priv;
     http->curl = curl_easy_init();
-
-    /* check if remote server url is valid formated */
-    CURLU *url= curl_url();
-    CURLUcode result;
-
-    /* parse a full URL */ 
-    result = curl_url_set(url, CURLUPART_URL, http->url, 0);
-    if(result){
-        av_log(NULL, AV_LOG_ERROR, "http filter failed: invalid input url!\n");
-    return AVERROR(EINVAL); 
-    }
-
-    /* set request headers */
-    http->headers=NULL;
-    http->headers = curl_slist_append(http->headers, av_asprintf("Content-Type: %s",http->content_type));
-    http->headers = curl_slist_append(http->headers, "Expect:");
-    curl_easy_setopt(http->curl, CURLOPT_HTTPHEADER, http->headers);
-    curl_easy_setopt(http->curl, CURLOPT_FOLLOWLOCATION, 1L);
-
-    curl_url_cleanup(url);
     return 0;
 }
 
@@ -118,17 +98,53 @@ static size_t WriteMemoryCallback(void *contents, size_t size, size_t nmemb, voi
   return realsize;
 }
 
+struct res_headers {
+  int width;
+  int height;
+  enum AVPixelFormat pix_fmt;
+};
+
+/* parse recieved response headers*/
+static size_t header_callback(char *buffer, size_t size, size_t nitems, void *userdata)
+{
+  size_t numbytes = size * nitems;
+  struct res_headers *h = (struct res_headers *)userdata;
+
+    if(strstr(buffer, "frame_width: ")!=NULL){
+        int r;
+        int value=0;
+        r = sscanf(buffer, "frame_width: %d\n", &value);
+        if(r){       
+           h->width=value;  
+        }  
+    }     
+    if(strstr(buffer, "frame_height: ")!=NULL){
+        int r;
+        int value=0;
+        r = sscanf(buffer, "frame_height: %d\n", &value);
+        if(r){       
+           h->height=value;  
+        }  
+    }    
+
+    if(strstr(buffer, "frame_pix_fmt: ")!=NULL){
+        int r;
+        char *value[100];
+        r = sscanf(buffer, "frame_pix_fmt: %s\n", &value);
+        if(r){       
+           h->pix_fmt=av_get_pix_fmt(value);  
+        }  
+    }
+
+  return numbytes;
+}
+
 static int filter_frame(AVFilterLink *inlink, AVFrame *in)
 {
     AVFilterContext *ctx = inlink->dst;
     AVFilterLink *outlink = ctx->outputs[0];
     HttpContext *http = inlink->dst->priv;
-    AVFrame *out = ff_get_video_buffer(outlink, outlink->w, outlink->h);
-    if (!out) {
-       av_frame_free(&in);
-       return AVERROR(ENOMEM); 
-    }
-    av_frame_copy_props(out, in);
+    AVFrame *out;
 
     CURL *curl=http->curl;
     CURLU *url= curl_url();
@@ -141,19 +157,8 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *in)
     int buff_size=av_image_get_buffer_size(in->format, in->width, in->height, 1);
     uint8_t *buffer=av_malloc(buff_size);    
     av_image_copy_to_buffer(buffer, buff_size, in->data, in->linesize, in->format, in->width, in->height, 1);
-
-    /* update url query */
-    CURLUcode result;
-    const char *url_params=av_asprintf("width=%d&height=%d&format=%d&size=%d&pts=%ld",in->width, in->height, in->format, buff_size, in->pts);
-    curl_url_set(url, CURLUPART_URL, http->url, 0);
-    result = curl_url_set(url, CURLUPART_QUERY, url_params, CURLU_APPENDQUERY);
-    if(result){
-        av_log(NULL, AV_LOG_ERROR, "http filter failed: failed to setup url query params!\n");
-    return AVERROR(EINVAL); 
-    }
-
-    /* specify the POST data */ 
-    curl_easy_setopt(http->curl, CURLOPT_CURLU,url);
+ 
+    curl_easy_setopt(curl, CURLOPT_URL, http->url);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, buffer);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, buff_size);
 
@@ -164,6 +169,25 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *in)
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&chunk);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "libcurl-agent/1.0");
 
+    /* set request headers */
+    http->headers=NULL;
+    http->headers = curl_slist_append(http->headers, av_asprintf("Content-Type: %s",http->content_type));
+    http->headers = curl_slist_append(http->headers, "Expect:");
+
+    /* server must know info about current frame, so we set frame data in custom request headers*/
+    http->headers = curl_slist_append(http->headers, av_asprintf("frame_width: %d",in->width));
+    http->headers = curl_slist_append(http->headers, av_asprintf("frame_height: %d",in->height));
+    http->headers = curl_slist_append(http->headers, av_asprintf("frame_pix_fmt: %s",av_get_pix_fmt_name(in->format)));
+    http->headers = curl_slist_append(http->headers, av_asprintf("frame_aspect_ratio: %f",av_q2d(in->sample_aspect_ratio)));
+    
+
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, http->headers);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);    
+      
+    struct res_headers headers_info = { 0, 0, -1 }; /* received  new frame info from server */
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
+    curl_easy_setopt(curl, CURLOPT_HEADERDATA, &headers_info);
+
     /* Perform the request, res will get the return code */ 
     res = curl_easy_perform(curl);
 
@@ -171,23 +195,36 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *in)
     if(res != CURLE_OK){
         av_log(NULL, AV_LOG_ERROR, "http filter failed: %s\n", curl_easy_strerror(res));
         av_frame_free(&in);
-        av_frame_free(&out);
+        // av_frame_free(&out);
         free(buffer);
     return AVERROR(EINVAL);
     }
     else{
-        if(chunk.size!=buff_size){
-           av_log(NULL, AV_LOG_ERROR, "http filter failed: size of the input and received frames must be equal!\n");
-        return AVERROR(EINVAL);
-        }
+    // printf(">>>>>>headers: width: %d, height: %d, pix_fmt: %d\n",headers_info.width,headers_info.height,headers_info.pix_fmt);
+    if(headers_info.width==0||headers_info.height==0){
+        av_log(NULL, AV_LOG_ERROR, "http filter failed: invalid frame size in response headers!\n");
+        return AVERROR(EINVAL);        
+    }
+    if(headers_info.pix_fmt==-1){
+           av_log(NULL, AV_LOG_ERROR, "http filter failed: invalid frame pixel format in response headers!\n");
+    return AVERROR(EINVAL);        
+    }
+
         /* fill frame data from received buffer */
-        av_image_fill_arrays(out->data, out->linesize, chunk.memory, out->format, out->width, out->height, 1);
+        // av_image_fill_arrays(out->data, out->linesize, chunk.memory, out->format, out->width, out->height, 1);
+        out = ff_get_video_buffer(outlink, headers_info.width, headers_info.height);
+    if (!out) {
+       av_frame_free(&in);
+       return AVERROR(ENOMEM); 
+    }
+       av_frame_copy_props(out, in);
+       av_image_fill_arrays(out->data, out->linesize, chunk.memory, headers_info.pix_fmt, headers_info.width, headers_info.height, 1);
     }
        
-        /* cleanup */ 
-        curl_url_cleanup(url);
-        av_free(buffer);
-        av_frame_free(&in);
+    /* cleanup */ 
+    curl_url_cleanup(url);
+    av_free(buffer);
+    av_frame_free(&in);
     return ff_filter_frame(outlink, out);
 } 
 
@@ -210,7 +247,7 @@ static const AVFilterPad avfilter_vf_http_outputs[] = {
 
 AVFilter ff_vf_http = {
     .name          = "http",
-    .description   = NULL_IF_CONFIG_SMALL("Send raw frame data to the remote server for postprocessing and await response as new frame in same format and size."),
+    .description   = NULL_IF_CONFIG_SMALL("Send raw frame data to the remote server for postprocessing and await response as new frame."),
     .priv_size     = sizeof(HttpContext),
     .init          = init,
     .uninit        = uninit,
