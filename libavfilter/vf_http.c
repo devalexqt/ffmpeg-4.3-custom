@@ -44,6 +44,7 @@ typedef struct HttpContext {
     char *content_type;
     CURL *curl;
     struct curl_slist *headers;
+    int64_t *debug;
 } HttpContext;
 
 #define OFFSET(x) offsetof(HttpContext, x)
@@ -52,6 +53,7 @@ typedef struct HttpContext {
 static const AVOption http_options[] = {
     { "url", "set remote url address", OFFSET(url), AV_OPT_TYPE_STRING, {.str=NULL}, FLAGS },
     { "content_type", "set 'Content-Type' request header", OFFSET(content_type), AV_OPT_TYPE_STRING, {.str="application/octet-stream"}, FLAGS },
+    { "debug", "print debug info", OFFSET(debug), AV_OPT_TYPE_INT, {.i64=0}, 0, 1 },
     { NULL }
 };
 
@@ -61,6 +63,9 @@ static av_cold int init(AVFilterContext *ctx)
 {
     HttpContext *http = ctx->priv;
     http->curl = curl_easy_init();
+    if(http->debug==1){
+        printf("HTTP DEBUG: URL: %s\n",http->url);
+    }
     return 0;
 }
 
