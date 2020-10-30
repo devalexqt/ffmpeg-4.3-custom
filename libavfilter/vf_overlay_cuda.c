@@ -30,10 +30,14 @@
 #include "libavutil/hwcontext.h"
 #include "libavutil/hwcontext_cuda_internal.h"
 #include "libavutil/cuda_check.h"
+#include "libavutil/eval.h"
 
 #include "avfilter.h"
 #include "framesync.h"
 #include "internal.h"
+
+#define OFFSET(x) offsetof(OverlayCUDAContext, x)
+#define FLAGS (AV_OPT_FLAG_FILTERING_PARAM | AV_OPT_FLAG_VIDEO_PARAM)
 
 #define CHECK_CU(x) FF_CUDA_CHECK_DL(ctx, ctx->hwctx->internal->cuda_dl, x)
 #define DIV_UP(a, b) ( ((a) + (b) - 1) / (b) )
@@ -52,6 +56,16 @@ static const enum AVPixelFormat supported_overlay_formats[] = {
     AV_PIX_FMT_YUV420P,
     AV_PIX_FMT_YUVA420P,
     AV_PIX_FMT_NONE,
+};
+
+enum var_name {
+    VAR_MAIN_W,     VAR_MW,
+    VAR_MAIN_H,     VAR_MH,
+    VAR_OVERLAY_W,  VAR_OW,
+    VAR_OVERLAY_H,  VAR_OH,
+    VAR_OVERLAY_X,  VAR_OX,
+    VAR_OVERLAY_Y,  VAR_OY,
+    VAR_VARS_NB
 };
 
 /**
@@ -74,8 +88,78 @@ typedef struct OverlayCUDAContext {
 
     int x_position;
     int y_position;
+    double var_values[VAR_VARS_NB];
+    char *x_expr,*y_expr;
 
 } OverlayCUDAContext;
+
+static const char *const var_names[] = {
+    "main_w",    "W", ///< width  of the main    video
+    "main_h",    "H", ///< height of the main    video
+    "overlay_w", "w", ///< width  of the overlay video
+    "overlay_h", "h", ///< height of the overlay video
+    NULL
+};
+
+static const AVOption overlay_cuda_options[] = {
+    // { "x", "Overlay x position",
+    //   OFFSET(x_position), AV_OPT_TYPE_INT, { .i64 = 0 }, INT_MIN, INT_MAX, .flags = FLAGS },
+    // { "y", "Overlay y position",
+    //   OFFSET(y_position), AV_OPT_TYPE_INT, { .i64 = 0 }, INT_MIN, INT_MAX, .flags = FLAGS },
+
+    { "x", "set the x expression", OFFSET(x_expr), AV_OPT_TYPE_STRING, {.str = "0"}, 0, 0, FLAGS },
+    { "y", "set the y expression", OFFSET(y_expr), AV_OPT_TYPE_STRING, {.str = "0"}, 0, 0, FLAGS },
+    { "eof_action", "Action to take when encountering EOF from secondary input ",
+        OFFSET(fs.opt_eof_action), AV_OPT_TYPE_INT, { .i64 = EOF_ACTION_REPEAT },
+        EOF_ACTION_REPEAT, EOF_ACTION_PASS, .flags = FLAGS, "eof_action" },
+        { "repeat", "Repeat the previous frame.",   0, AV_OPT_TYPE_CONST, { .i64 = EOF_ACTION_REPEAT }, .flags = FLAGS, "eof_action" },
+        { "endall", "End both streams.",            0, AV_OPT_TYPE_CONST, { .i64 = EOF_ACTION_ENDALL }, .flags = FLAGS, "eof_action" },
+        { "pass",   "Pass through the main input.", 0, AV_OPT_TYPE_CONST, { .i64 = EOF_ACTION_PASS },   .flags = FLAGS, "eof_action" },
+    { "shortest", "force termination when the shortest input terminates", OFFSET(fs.opt_shortest), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, FLAGS },
+    { "repeatlast", "repeat overlay of the last overlay frame", OFFSET(fs.opt_repeatlast), AV_OPT_TYPE_BOOL, {.i64=1}, 0, 1, FLAGS },
+    { NULL },
+};
+
+FRAMESYNC_DEFINE_CLASS(overlay_cuda, OverlayCUDAContext, fs);
+
+static int eval_expr(AVFilterContext *ctx)
+{
+    OverlayCUDAContext *c = ctx->priv;
+    double     *var_values = c->var_values;
+    int                ret = 0;
+    AVExpr *x_expr = NULL, *y_expr = NULL;
+
+#define PASS_EXPR(e, s) {\
+    ret = av_expr_parse(&e, s, var_names, NULL, NULL, NULL, NULL, 0, ctx); \
+    if (ret < 0) {\
+        av_log(ctx, AV_LOG_ERROR, "Error when passing '%s'.\n", s);\
+        goto release;\
+    }\
+}
+    PASS_EXPR(x_expr, c->x_expr);
+    PASS_EXPR(y_expr, c->y_expr);
+#undef PASS_EXPR
+
+    var_values[VAR_OVERLAY_X] =
+    var_values[VAR_OX]        = av_expr_eval(x_expr, var_values, NULL);
+    var_values[VAR_OVERLAY_Y] =
+    var_values[VAR_OY]        = av_expr_eval(y_expr, var_values, NULL);
+
+    /* calc again in case ox is relative to oy */
+    var_values[VAR_OVERLAY_X] =
+    var_values[VAR_OX]        = av_expr_eval(x_expr, var_values, NULL);
+
+// printf(">>>parsing values VAR_OVERLAY_X: %f\n",var_values[VAR_OVERLAY_X]);
+// printf(">>>parsing values VAR_OVERLAY_Y: %f\n",var_values[VAR_OVERLAY_Y]);
+
+        c->x_position=(int)var_values[VAR_OVERLAY_X];
+        c->y_position=(int)var_values[VAR_OVERLAY_Y];
+release:
+    av_expr_free(x_expr);
+    av_expr_free(y_expr);
+
+    return ret;
+}
 
 /**
  * Helper to find out if provided format is supported by filter
@@ -280,6 +364,55 @@ static int overlay_cuda_query_formats(AVFilterContext *avctx)
 }
 
 /**
+ * Configure inputs
+ */
+
+//  enum var_name {
+//     VAR_MAIN_W,     VAR_MW,
+//     VAR_MAIN_H,     VAR_MH,
+//     VAR_OVERLAY_W,  VAR_OW,
+//     VAR_OVERLAY_H,  VAR_OH,
+//     VAR_VARS_NB
+// };
+ static int config_main_input(AVFilterLink *inlink)
+{
+    AVFilterContext      *ctx = inlink->dst;
+    OverlayCUDAContext    *o = ctx->priv;
+
+    av_log(ctx, AV_LOG_DEBUG, "Input[%d] is of %s.\n", FF_INLINK_IDX(inlink),
+           av_get_pix_fmt_name(inlink->format));
+        // printf(">>>>>>>>>>>>>>>config_main_input: w: %d, h: %d\n",inlink->w,inlink->h);
+
+    o->var_values[VAR_MAIN_W] =
+    o->var_values[VAR_MW]      = inlink->w;
+    o->var_values[VAR_MAIN_H] =
+    o->var_values[VAR_MH]      = inlink->h;
+
+    return 0;
+}
+static int config_overlay_input(AVFilterLink *inlink)
+{
+    AVFilterContext       *ctx = inlink->dst;
+    OverlayCUDAContext     *o = ctx->priv;
+    int                    ret = 0;
+
+    av_log(ctx, AV_LOG_DEBUG, "Input[%d] is of %s.\n", FF_INLINK_IDX(inlink),
+           av_get_pix_fmt_name(inlink->format));
+    // printf(">>>>>>>>>>>>>>>config_overlay_input: w: %d, h: %d\n",inlink->w,inlink->h);
+
+    o->var_values[VAR_OVERLAY_W] =
+    o->var_values[VAR_OW] = inlink->w;
+    o->var_values[VAR_OVERLAY_H] =
+    o->var_values[VAR_OH] = inlink->h;
+
+    ret = eval_expr(ctx);
+    if (ret < 0)
+        return ret;
+
+    return 0;
+}
+
+/**
  * Configure output
  */
 static int overlay_cuda_config_output(AVFilterLink *outlink)
@@ -379,36 +512,17 @@ static int overlay_cuda_config_output(AVFilterLink *outlink)
     return ff_framesync_configure(&ctx->fs);
 }
 
-
-#define OFFSET(x) offsetof(OverlayCUDAContext, x)
-#define FLAGS (AV_OPT_FLAG_FILTERING_PARAM | AV_OPT_FLAG_VIDEO_PARAM)
-
-static const AVOption overlay_cuda_options[] = {
-    { "x", "Overlay x position",
-      OFFSET(x_position), AV_OPT_TYPE_INT, { .i64 = 0 }, INT_MIN, INT_MAX, .flags = FLAGS },
-    { "y", "Overlay y position",
-      OFFSET(y_position), AV_OPT_TYPE_INT, { .i64 = 0 }, INT_MIN, INT_MAX, .flags = FLAGS },
-    { "eof_action", "Action to take when encountering EOF from secondary input ",
-        OFFSET(fs.opt_eof_action), AV_OPT_TYPE_INT, { .i64 = EOF_ACTION_REPEAT },
-        EOF_ACTION_REPEAT, EOF_ACTION_PASS, .flags = FLAGS, "eof_action" },
-        { "repeat", "Repeat the previous frame.",   0, AV_OPT_TYPE_CONST, { .i64 = EOF_ACTION_REPEAT }, .flags = FLAGS, "eof_action" },
-        { "endall", "End both streams.",            0, AV_OPT_TYPE_CONST, { .i64 = EOF_ACTION_ENDALL }, .flags = FLAGS, "eof_action" },
-        { "pass",   "Pass through the main input.", 0, AV_OPT_TYPE_CONST, { .i64 = EOF_ACTION_PASS },   .flags = FLAGS, "eof_action" },
-    { "shortest", "force termination when the shortest input terminates", OFFSET(fs.opt_shortest), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, FLAGS },
-    { "repeatlast", "repeat overlay of the last overlay frame", OFFSET(fs.opt_repeatlast), AV_OPT_TYPE_BOOL, {.i64=1}, 0, 1, FLAGS },
-    { NULL },
-};
-
-FRAMESYNC_DEFINE_CLASS(overlay_cuda, OverlayCUDAContext, fs);
-
 static const AVFilterPad overlay_cuda_inputs[] = {
     {
         .name         = "main",
         .type         = AVMEDIA_TYPE_VIDEO,
+        .config_props  = config_main_input,
     },
     {
         .name         = "overlay",
         .type         = AVMEDIA_TYPE_VIDEO,
+        .config_props  = config_overlay_input,
+
     },
     { NULL }
 };
