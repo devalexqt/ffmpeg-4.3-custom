@@ -83,6 +83,7 @@ typedef struct OverlayCUDAContext {
     CUmodule cu_module;
     CUfunction cu_func;
     CUstream cu_stream;
+    CUfunction  cu_func_uchar;
 
     FFFrameSync fs;
 
@@ -148,9 +149,6 @@ static int eval_expr(AVFilterContext *ctx)
     /* calc again in case ox is relative to oy */
     var_values[VAR_OVERLAY_X] =
     var_values[VAR_OX]        = av_expr_eval(x_expr, var_values, NULL);
-
-// printf(">>>parsing values VAR_OVERLAY_X: %f\n",var_values[VAR_OVERLAY_X]);
-// printf(">>>parsing values VAR_OVERLAY_Y: %f\n",var_values[VAR_OVERLAY_Y]);
 
         c->x_position=(int)var_values[VAR_OVERLAY_X];
         c->y_position=(int)var_values[VAR_OVERLAY_Y];
@@ -257,6 +255,20 @@ static int overlay_cuda_blend(FFFrameSync *fs)
         av_frame_free(&input_main);
         return ret;
     }
+
+    //scale watermark (from scale_cuda filter)
+        // call_resize_kernel(ctx, s->cu_func_uchar, 1,
+        //                    input_overlay->data[0], input_overlay->width, input_overlay->height, input_overlay->linesize[0],
+        //                    out_overlay->data[0], out_overlay->width, out_overlay->height, out_overlay->linesize[0],
+        //                    1);
+        // call_resize_kernel(ctx, s->cu_func_uchar, 1,
+        //                    in->data[1], in->width/2, in->height/2, in->linesize[0]/2,
+        //                    out->data[1], out->width/2, out->height/2, out->linesize[0]/2,
+        //                    1);
+        // call_resize_kernel(ctx, s->cu_func_uchar, 1,
+        //                    in->data[2], in->width/2, in->height/2, in->linesize[0]/2,
+        //                    out->data[2], out->width/2, out->height/2, out->linesize[0]/2,
+        //                    1);
 
     // overlay first plane
 
@@ -381,7 +393,6 @@ static int overlay_cuda_query_formats(AVFilterContext *avctx)
 
     av_log(ctx, AV_LOG_DEBUG, "Input[%d] is of %s.\n", FF_INLINK_IDX(inlink),
            av_get_pix_fmt_name(inlink->format));
-        // printf(">>>>>>>>>>>>>>>config_main_input: w: %d, h: %d\n",inlink->w,inlink->h);
 
     o->var_values[VAR_MAIN_W] =
     o->var_values[VAR_MW]      = inlink->w;
@@ -398,7 +409,6 @@ static int config_overlay_input(AVFilterLink *inlink)
 
     av_log(ctx, AV_LOG_DEBUG, "Input[%d] is of %s.\n", FF_INLINK_IDX(inlink),
            av_get_pix_fmt_name(inlink->format));
-    // printf(">>>>>>>>>>>>>>>config_overlay_input: w: %d, h: %d\n",inlink->w,inlink->h);
 
     o->var_values[VAR_OVERLAY_W] =
     o->var_values[VAR_OW] = inlink->w;
@@ -415,9 +425,8 @@ static int config_overlay_input(AVFilterLink *inlink)
 /**
  * Configure output
  */
-static int overlay_cuda_config_output(AVFilterLink *outlink)
+static av_cold int overlay_cuda_config_output(AVFilterLink *outlink)
 {
-
     extern char vf_overlay_cuda_ptx[];
 
     int err;

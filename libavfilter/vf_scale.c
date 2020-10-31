@@ -330,15 +330,53 @@ static av_cold int init_dict(AVFilterContext *ctx, AVDictionary **opts)
 
 static av_cold void uninit(AVFilterContext *ctx)
 {
+    // printf(">>>>>>uninit!\n");
+    // // ctx->hw_device_ctx=NULL;
+    // // int isHW=0;
+    // // const char *format=av_get_pix_fmt_name(ctx->inputs[1]->format);
+    // // printf(">>>>uninit... start isHW: %d, format: %s, nb_inputs: %d, nb_outputs: %d\n",isHW,av_get_pix_fmt_name(ctx->inputs[1]->format),ctx->nb_inputs,ctx->nb_outputs);//ctx->inputs[0]->format
+    // printf(">>>>>inputs: %d\n",ctx->nb_inputs);
+    // // ctx->hw_device_ctx=NULL;
+    // if(ctx->inputs!=NULL){
+    //     printf(">>>>>>>inputs_1, format %s\n",av_get_pix_fmt_name(ctx->inputs[1]->format));
+    //     ctx->inputs[1]->hw_frames_ctx=NULL;
+    // }
+    // // printf(">>>>>format: %s\n",format);
+    // // if(format!="cuda"){
+    // //     // printf(">>>>>>HW FORMAT CUDA!\n");
+    // //     // return;
+    // // }
+
     ScaleContext *scale = ctx->priv;
+    // printf(">>>>uninit... stage 1 \n");
     av_expr_free(scale->w_pexpr);
+    // printf(">>>>uninit... stage 2 \n");
     av_expr_free(scale->h_pexpr);
+    // printf(">>>>uninit... stage 3 \n");
     scale->w_pexpr = scale->h_pexpr = NULL;
+    // printf(">>>>uninit... stage 4 \n");
     sws_freeContext(scale->sws);
+    // printf(">>>>uninit... stage 5 \n");
     sws_freeContext(scale->isws[0]);
+    // printf(">>>>uninit... stage 6 \n");
     sws_freeContext(scale->isws[1]);
+    // printf(">>>>uninit... stage 7 \n");
     scale->sws = NULL;
+    // printf(">>>>uninit... stage 8 \n");
     av_dict_free(&scale->opts);
+    // printf(">>>>uninit... stage final \n");
+}
+
+static av_cold void uninit2ref(AVFilterContext *ctx)
+{
+    // int isHW=0;
+    // if(ctx->hw_device_ctx!=NULL){isHW=sizeof(ctx->hw_device_ctx);}
+    // printf(">>>>uninit2ref... start isHW: %d, format: %s, nb_inputs: %d, nb_outputs: %d\n",isHW,av_get_pix_fmt_name(ctx->inputs[1]->format),ctx->nb_inputs,ctx->nb_outputs);//ctx->inputs[0]->format
+    // ctx->hw_device_ctx=NULL;
+    ctx->inputs[1]->hw_frames_ctx=NULL;
+    // if(outlink->hw_frames_ctx){
+    //     outlink->hw_frames_ctx=inlink->hw_frames_ctx;
+    // }
 }
 
 static int query_formats(AVFilterContext *ctx)
@@ -609,6 +647,12 @@ static int config_props_ref(AVFilterLink *outlink)
     outlink->sample_aspect_ratio = inlink->sample_aspect_ratio;
     outlink->time_base = inlink->time_base;
     outlink->frame_rate = inlink->frame_rate;
+    //added
+        // printf(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>@@@@@@@@ HW frame!!!!! size: %d, format: %s, ctx: %d\n",inlink->hw_frames_ctx->size,av_get_pix_fmt_name(inlink->format),inlink->src->hw_device_ctx->size);
+    // if(outlink->hw_frames_ctx){
+        // outlink->src->hw_device_ctx=inlink->src->hw_device_ctx;
+        outlink->hw_frames_ctx=inlink->hw_frames_ctx;
+    // }
 
     return 0;
 }
@@ -1034,7 +1078,7 @@ AVFilter ff_vf_scale2ref = {
     .name            = "scale2ref",
     .description     = NULL_IF_CONFIG_SMALL("Scale the input video size and/or convert the image format to the given reference."),
     .init_dict       = init_dict,
-    .uninit          = uninit,
+    .uninit          = uninit2ref,
     .query_formats   = query_formats,
     .priv_size       = sizeof(ScaleContext),
     .priv_class      = &scale2ref_class,
