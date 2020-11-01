@@ -369,11 +369,18 @@ static av_cold void uninit(AVFilterContext *ctx)
 
 static av_cold void uninit2ref(AVFilterContext *ctx)
 {
-    // int isHW=0;
+    int isHW=0;
     // if(ctx->hw_device_ctx!=NULL){isHW=sizeof(ctx->hw_device_ctx);}
     // printf(">>>>uninit2ref... start isHW: %d, format: %s, nb_inputs: %d, nb_outputs: %d\n",isHW,av_get_pix_fmt_name(ctx->inputs[1]->format),ctx->nb_inputs,ctx->nb_outputs);//ctx->inputs[0]->format
+    int length=sizeof(ctx->inputs)/sizeof(ctx->inputs[0]);
+    printf(">>>>uninit2ref... nb_inputs: %d, nb_outputs: %d, inputs: %d\n",ctx->nb_inputs,ctx->nb_outputs,length);//ctx->inputs[0]->format
     // ctx->hw_device_ctx=NULL;
-    ctx->inputs[1]->hw_frames_ctx=NULL;
+    // for(int i=0;i<length;i++){
+    //     printf(">>>cleanup inputs: %d\n",i);
+    //     ctx->inputs[i]->hw_frames_ctx=NULL;
+    // }
+    printf(">>>>>uninit2ref after\n");
+    // ctx->inputs[1]->hw_frames_ctx=NULL;
     // if(outlink->hw_frames_ctx){
     //     outlink->hw_frames_ctx=inlink->hw_frames_ctx;
     // }
@@ -647,11 +654,21 @@ static int config_props_ref(AVFilterLink *outlink)
     outlink->sample_aspect_ratio = inlink->sample_aspect_ratio;
     outlink->time_base = inlink->time_base;
     outlink->frame_rate = inlink->frame_rate;
+    outlink->format=inlink->format;
+
     //added
         // printf(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>@@@@@@@@ HW frame!!!!! size: %d, format: %s, ctx: %d\n",inlink->hw_frames_ctx->size,av_get_pix_fmt_name(inlink->format),inlink->src->hw_device_ctx->size);
     // if(outlink->hw_frames_ctx){
         // outlink->src->hw_device_ctx=inlink->src->hw_device_ctx;
-        outlink->hw_frames_ctx=inlink->hw_frames_ctx;
+        // outlink->hw_frames_ctx=inlink->hw_frames_ctx;
+        // AVHWFramesContext  *frames_ctx_overlay = (AVHWFramesContext*)inlink->hw_frames_ctx->data;
+        
+        if (inlink->hw_frames_ctx) {
+            // av_log(outlink->src, AV_LOG_ERROR, "No hw context provided on overlay input\n");
+            // return AVERROR(EINVAL);
+            outlink->hw_frames_ctx = av_buffer_ref(inlink->hw_frames_ctx);
+        }        
+        // printf(">>>>>>>config_props_ref: inlink[0]->w: %d, inlink[1]->w: %d\n",outlink->src->inputs[0]->w,outlink->src->inputs[1]->w);
     // }
 
     return 0;
@@ -1078,11 +1095,12 @@ AVFilter ff_vf_scale2ref = {
     .name            = "scale2ref",
     .description     = NULL_IF_CONFIG_SMALL("Scale the input video size and/or convert the image format to the given reference."),
     .init_dict       = init_dict,
-    .uninit          = uninit2ref,
+    .uninit          = uninit,
     .query_formats   = query_formats,
     .priv_size       = sizeof(ScaleContext),
     .priv_class      = &scale2ref_class,
     .inputs          = avfilter_vf_scale2ref_inputs,
     .outputs         = avfilter_vf_scale2ref_outputs,
     .process_command = process_command,
+    .flags_internal = FF_FILTER_FLAG_HWFRAME_AWARE,
 };
