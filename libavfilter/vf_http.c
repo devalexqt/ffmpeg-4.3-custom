@@ -26,6 +26,7 @@
 #include "libavutil/internal.h"
 #include "libavutil/imgutils.h"
 #include "libavutil/avstring.h"
+#include "libavutil/eval.h"
 #include "avfilter.h"
 #include "formats.h"
 #include "internal.h"
@@ -38,6 +39,12 @@ struct MemoryStruct {
   size_t size;
 };
 
+enum var_name {
+    VAR_MAIN_W,     VAR_IW,
+    VAR_MAIN_H,     VAR_IH,
+    VAR_VARS_NB
+};
+
 typedef struct HttpContext {
     const AVClass *class;
     char *url;
@@ -45,7 +52,17 @@ typedef struct HttpContext {
     CURL *curl;
     struct curl_slist *headers;
     int64_t *debug;
+    int w,h;
+    char *w_expr;
+    char *h_expr;               ///< width and height expression string
+    double var_values[VAR_VARS_NB];
 } HttpContext;
+
+static const char *const var_names[] = {
+    "main_w",    "iw", ///< width  of the main    video
+    "main_h",    "ih", ///< height of the main    video
+    NULL
+};
 
 #define OFFSET(x) offsetof(HttpContext, x)
 #define FLAGS AV_OPT_FLAG_FILTERING_PARAM|AV_OPT_FLAG_VIDEO_PARAM
@@ -53,19 +70,59 @@ typedef struct HttpContext {
 static const AVOption http_options[] = {
     { "url", "set remote url address", OFFSET(url), AV_OPT_TYPE_STRING, {.str=NULL}, FLAGS },
     { "content_type", "set 'Content-Type' request header", OFFSET(content_type), AV_OPT_TYPE_STRING, {.str="application/octet-stream"}, FLAGS },
-    { "debug", "print debug info", OFFSET(debug), AV_OPT_TYPE_INT, {.i64=0}, 0, 1 },
+    { "debug", "print debug info (0 or 1)", OFFSET(debug), AV_OPT_TYPE_INT, {.i64=0}, 0, 1 },
+    { "w", "set the output w expression (iw, main_w)", OFFSET(w_expr), AV_OPT_TYPE_STRING, {.str = "0"}, 0, 0, FLAGS },
+    { "h", "set the output h expression (ih, main_h)", OFFSET(h_expr), AV_OPT_TYPE_STRING, {.str = "0"}, 0, 0, FLAGS },
     { NULL }
 };
 
 AVFILTER_DEFINE_CLASS(http);
 
+static int eval_expr(AVFilterContext *ctx)
+{
+    HttpContext *c = ctx->priv;
+    double *var_values = c->var_values;
+    int ret = 0;
+    AVExpr *w_expr = NULL, *h_expr = NULL;
+
+
+#define PASS_EXPR(e, s) {\
+    ret = av_expr_parse(&e, s, var_names, NULL, NULL, NULL, NULL, 0, ctx); \
+    if (ret < 0) {\
+        av_log(ctx, AV_LOG_ERROR, "Error when passing '%s'.\n", s);\
+        goto release;\
+    }\
+}
+
+    PASS_EXPR(w_expr, c->w_expr);
+    PASS_EXPR(h_expr, c->h_expr);
+#undef PASS_EXPR
+
+    var_values[VAR_MAIN_W] =
+    var_values[VAR_IW]        = av_expr_eval(w_expr, var_values, NULL);
+    var_values[VAR_MAIN_H] =
+    var_values[VAR_IH]        = av_expr_eval(h_expr, var_values, NULL);
+
+    c->w=(int)var_values[VAR_IW];
+    c->h=(int)var_values[VAR_IH];
+release:
+    av_expr_free(w_expr);
+    av_expr_free(h_expr);
+
+    return ret;
+}
+
 static av_cold int init(AVFilterContext *ctx)
 {
     HttpContext *http = ctx->priv;
     http->curl = curl_easy_init();
+    int ret=0;
     if(http->debug==1){
         printf("HTTP DEBUG: URL: %s\n",http->url);
     }
+//    ret = eval_expr(http);
+    // if (ret < 0)
+    //     return ret;
     return 0;
 }
 
@@ -205,7 +262,9 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *in)
     return AVERROR(EINVAL);
     }
     else{
-    // printf(">>>>>>headers: width: %d, height: %d, pix_fmt: %d\n",headers_info.width,headers_info.height,headers_info.pix_fmt);
+        if(http->debug==1){
+            printf("HTTP received headers: width: %d, height: %d, pix_fmt: %d\n",headers_info.width,headers_info.height,headers_info.pix_fmt);
+        }
     if(headers_info.width==0||headers_info.height==0){
         av_log(NULL, AV_LOG_ERROR, "http filter failed: invalid frame size in response headers!\n");
         return AVERROR(EINVAL);        
@@ -224,6 +283,9 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *in)
     }
        av_frame_copy_props(out, in);
        av_image_fill_arrays(out->data, out->linesize, chunk.memory, headers_info.pix_fmt, headers_info.width, headers_info.height, 1);
+    //    outlink->w=headers_info.width;
+    //    outlink->h=headers_info.height;
+    //    outlink->format=headers_info.pix_fmt;
     }
        
     /* cleanup */ 
@@ -233,11 +295,57 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *in)
     return ff_filter_frame(outlink, out);
 } 
 
+static int http_config_input(AVFilterLink *inlink)
+{
+    AVFilterContext *avctx = inlink->dst;
+    HttpContext *ctx = avctx->priv;
+    int  ret = 0;
+
+    av_log(avctx, AV_LOG_DEBUG, "Input[%d] is of %s.\n", FF_INLINK_IDX(inlink), av_get_pix_fmt_name(inlink->format));
+
+    ctx->var_values[VAR_MAIN_W] =
+    ctx->var_values[VAR_IW] = inlink->w;
+    ctx->var_values[VAR_MAIN_H] =
+    ctx->var_values[VAR_IH] = inlink->h;
+    
+    if(ctx->debug==1){
+        printf("HTTP config_input inlink WxH: %dx%d\n",inlink->w,inlink->h);
+    }
+
+    ret = eval_expr(avctx);
+    if (ret < 0)
+        return ret;
+
+    return 0;
+}
+
+static int http_config_output(AVFilterLink *outlink)
+{
+    int err;
+    AVFilterContext *avctx = outlink->src;
+    HttpContext* ctx = avctx->priv;
+    AVFilterLink *inlink   = outlink->src->inputs[0];
+    
+    if(ctx->debug==1){
+        printf("HTTP config_output WxH: %dx%d\n",ctx->w,ctx->h);
+    }
+
+    outlink->w = ctx->w;
+    outlink->h = ctx->h;
+    outlink->sample_aspect_ratio = inlink->sample_aspect_ratio;
+    outlink->time_base = inlink->time_base;
+    outlink->frame_rate = inlink->frame_rate;
+    outlink->format=inlink->format;
+
+    return 0;
+}
+
 static const AVFilterPad avfilter_vf_http_inputs[] = {
     {
         .name = "default",
         .type = AVMEDIA_TYPE_VIDEO,
-        .filter_frame = filter_frame,        
+        .filter_frame = filter_frame,  
+        .config_props = &http_config_input,      
     },
     { NULL }
 };
@@ -246,6 +354,7 @@ static const AVFilterPad avfilter_vf_http_outputs[] = {
     {
         .name = "default",
         .type = AVMEDIA_TYPE_VIDEO,
+        .config_props = &http_config_output,
     },
     { NULL }
 };
